@@ -19,15 +19,8 @@ try {
     //PDO virhetilan asetukset:
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     echo "Tietokantayhteys onnistui!";
-} catch (PDOException $e) {
-    //Virheenkäsittely:
-    die("Tietokantayhteys epäonnistui: " . $e->getMessage());
-}
 
-// Tarkistetaan, että lomaketta on lähetetty POST-metodilla
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
-
-    // Luodaan käyttäjät taulu, jos sitä ei vielä ole olemassa
+// Luodaan käyttäjät taulu, jos sitä ei vielä ole olemassa
 $createUsersTableQuery = "
 CREATE TABLE IF NOT EXISTS users (
      id INT AUTO_INCREMENT PRIMARY KEY,
@@ -56,16 +49,30 @@ $blockchain = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 //Luodaan genesis block, jos lohkoketjua ei vielä ole
 if (count($blockchain) == 0) {
-$genesisBlock = array(
-    'name' => 'Genesis',
-    'vote' => 'First Block',
-    'timestamp' => time(),
-    'previous_hash' => null,
-    'hash' => '0 (genesis block)' // Hash for the genesis block (can be any unique value)
-);
+    $genesisBlock = array(
+        'name' => 'Genesis',
+        'vote' => 'First Block',
+        'timestamp' => time(),
+        'previous_hash' => null,
+        'current_hash' => '0 (genesis block)' // Hash for the genesis block (can be any unique value)
+    );
+    $blockchain[] = $genesisBlock;
 
-$blockchain[] = $genesisBlock;
-}
+    //Tallennetaan genesis block tietokantaan 
+    $insertGenesisQuery = "INSERT INTO blockchain (timestamp, previous_hash, current_hash, data) 
+                            VALUES (:timestamp, :previousHash, :currentHash, :data)"; 
+        $stmt = $pdo->prepare($insertGenesisQuery); 
+        $stmt->execute([ 
+            'timestamp' => $genesisBlock['timestamp'], 
+            'previousHash' => $genesisBlock['previous_hash'], 
+            'currentHash' => $genesisBlock['current_hash'], 
+            'data' => $genesisBlock['name'] . '->' . $genesisBlock['vote'] 
+        ]); 
+    } 
+
+// Tarkistetaan, että lomaketta on lähetetty POST-metodilla
+if ($_SERVER["REQUEST_METHOD"] == "POST") {
+
     // Tarkistetaan, että tarvittavat kentät ovat asetettu
     if (isset($_POST["name"]) && isset($_POST["vote"])) {
 
@@ -75,7 +82,7 @@ $blockchain[] = $genesisBlock;
 
         // Haetaan edellisen lohkon hash
         $previousBlock = end($blockchain);
-        $previousHash = isset($previousBlock['hash']) ? $previousBlock['hash'] : null;
+        $previousHash = isset($previousBlock['current_hash']) ? $previousBlock['current_hash'] : null;
 
         // Muodostetaan uusi lohko
         $block = array(
@@ -86,46 +93,47 @@ $blockchain[] = $genesisBlock;
         );
 
         // Lasketaan uuden lohkon hash
-        $block['hash'] = hash('sha256', json_encode($block));
+        $block['current_hash'] = hash('sha256', json_encode($block));
 
         // Lisätään uusi lohko lohkoketjuun
         $blockchain[] = $block;
 
-// Tallennetaan päivitetty lohkoketju takaisin tietokantaan
-foreach ($blockchain as $block) {
-    $name = $block['name'];
-    $vote = $block['vote'];
-    $timestamp = $block['timestamp'];
-    $previousHash = $block['previous_hash'];
-    $hash = $block['hash'];
+        // Päivitä edellisen lohkon hash-arvo uuteen lohkoon 
+        $updatePreviousHashQuery = "UPDATE blockchain SET previous_hash = :previousHash WHERE blockchain_index = :index"; 
+        $stmt = $pdo->prepare($updatePreviousHashQuery); 
+        $stmt->execute(['previousHash' => $block['current_hash'], 'index' => count($blockchain) - 2]); 
+
+
+        // Tallennetaan päivitetty lohkoketju takaisin tietokantaan
 
     // Tietokantaan lisättävä SQL-kysely
     $insertBlockQuery = "INSERT INTO blockchain (timestamp, previous_hash, current_hash, data) 
-    VALUES ('$timestamp', '$previousHash', '$hash', '$name->$vote')";
+    VALUES (:timestamp, :previousHash, :currentHash, :data)";
 
-    // Suoritetaan SQL-kysely
-    try {
-        $pdo->exec($insertBlockQuery);
-        echo "Lohko tallennettu onnistuneesti tietokantaan<br>";
-    } catch (PDOException $e) {
-        echo "Virhe tallennettaessa lohkoa tietokantaan: " . $e->getMessage();
-    }
-}
+        $stmt = $pdo->prepare($insertBlockQuery); 
+        $stmt->execute([ 
+                'timestamp' => $block['timestamp'], 
+                'previousHash' => $block['previous_hash'], 
+                'currentHash' => $block['current_hash'], 
+                'data' => $block['name'] . '->' . $block['vote'] 
+            ]); 
+
+    
         // Tulostetaan lohkoketju
         echo '<h2>Results</h2>';
         echo '<table border="1">';
-        echo '<tr><th>Name</th><th>Vote</th><th>Timestamp</th><th>Hash</th><th>Previous Hash</th></tr>';
+        echo '<tr><th>Name->Vote</th><th>Timestamp</th><th>Hash</th><th>Previous Hash</th></tr>';
 
         // Tulostetaan lohkot paitsi genesis block
-        for ($i = 1; $i < count($blockchain); $i++) {
-            $block = $blockchain[$i];
-            echo '<tr>';
-            echo '<td>' . $block['name'] . '</td>';
-            echo '<td>' . $block['vote'] . '</td>';
-            echo '<td>' . date('Y-m-d H:i:s', $block['timestamp']) . '</td>';
-            echo '<td>' . $block['hash'] . '</td>';
-            echo '<td>' . $block['previous_hash'] . '</td>';
-            echo '</tr>';
+        $selectBlockchainQuery = "SELECT * FROM blockchain"; 
+            $stmt = $pdo->query($selectBlockchainQuery); 
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC))  {
+                echo '<tr>';
+                echo '<td>' . $row['data'] . '</td>';
+                echo '<td>' . date('Y-m-d H:i:s', $row['timestamp']) . '</td>';
+                echo '<td>' . $row['current_hash'] . '</td>';
+                echo '<td>' . $row['previous_hash'] . '</td>';
+                echo '</tr>';
         }
 
         echo '</table>';
@@ -135,6 +143,12 @@ foreach ($blockchain as $block) {
 } else {
     echo 'Virhe: Lomaketta ei ole lähetetty oikealla HTTP-metodilla.';
 }
+
+} catch (PDOException $e) {
+    //Virheenkäsittely:
+    echo "Tietokantayhteys epäonnistui: " . $e->getMessage();
+}
+
 echo "<p>You are logged in as: " . $_SESSION['username'] . "</p>";
 echo "<p>Back to <a href='index.php'>main page</a>.</p>";
 echo "<p>You are logged in. <a href='logout.php'>Log out.</a></p>";
